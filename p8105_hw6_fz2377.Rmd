@@ -15,6 +15,8 @@ library(rnoaa)
 library(dplyr)
 library(broom)
 library(ggplot2)
+library(caret)
+library(purrr)
 ```
 
 # Problem 1
@@ -39,7 +41,9 @@ weather_df =
     tmax = tmax / 10) |>
   select(name, id, everything())
 ```
+
 This weather data for Central Park, New York, for the year 2022, focusing on precipitation (PRCP), minimum temperature (TMIN), and maximum temperature (TMAX).
+
 ```{r}
 # Define a bootstrap function
 bootstrap_function = function(data) {
@@ -70,7 +74,87 @@ print(r_sq_ci)
 log_beta_ci = quantile(bootstrap_df$log_beta_product, probs = c(0.025, 0.975))
 print(log_beta_ci)
 ```
-The histogram of Distribution of r-square is slightly skewed to left side, with the 2.5% quantile at 0.8882079 and 97.5% quantile at 0.9402552 in the distribution. 
-The histogram of Distribution of log(beta1 * beta2) is skewed to left side obviously, with the 2.5% quantile at -8.696970 and 97.5% quantile at -4.601153 in the distribution. 
+
+The histogram of Distribution of r-square is slightly skewed to left side, with the 2.5% quantile at 0.8882079 and 97.5% quantile at 0.9402552 in the distribution. The histogram of Distribution of log(beta1 \* beta2) is skewed to left side obviously, with the 2.5% quantile at -8.696970 and 97.5% quantile at -4.601153 in the distribution.
 
 # Problem 3
+
+```{r message=FALSE, warning=FALSE}
+#Loading and Cleaning data
+birthweight_df = read.csv("birthweight.csv") |>
+   mutate(
+     babysex = recode(babysex, "1" = "male", "2" = "female"),
+     frace = recode(frace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other", "9" = "Unknown"),
+     malform = recode(malform, "0" = "absent", "1" = "present"),
+     mrace = recode(mrace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other"))|>
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    mrace = as.factor(mrace),
+    malform = as.factor(malform)) |>
+  select(-parity, -pnumlbw, -pnumsga)
+# Check for missing data
+colSums(is.na(birthweight_df))
+```
+
+Loading the data-set, cleaning variavles with 0.00 values ("parity", "pnumlbw", "pnumsga"), then re-coding some numerical variables ("babysex", "frace", "mrace", "malform") into corresponding meaningful categories. \## Propose a regression model for birthweight:
+
+```{r message=FALSE, warning=FALSE}
+model = lm(bwt ~ babysex + bhead + blength + fincome + gaweeks + malform, 
+           data = birthweight_df)
+summary(model)
+```
+
+I've chosen predictors like babysex (male tend to have higher birthweights than female babies), head circumference and body length (both indicates baby's size and growth during pregnancy), gestational age in weeks (longer gestation periods can result in higher birthweights), family income (socioeconomic status related to maternal well-being then can affect baby's health), and presence of malformations (any malformations will affect baby's development).
+
+```{r}
+#Plotting model residuals against fitted values
+model_df = birthweight_df |>
+  add_predictions(model, var = "fitted_values") |>
+  add_residuals(model, var = "residuals")
+ggplot(model_df, aes(fitted_values, residuals)) +
+  geom_point(alpha = .5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values", y = "Residuals") +
+  ggtitle("Residuals vs Fitted")
+```
+
+This model's plot shows that the residuals are randomly scattered around the zero line without distinct patterns, and the linear regression assumptions are reasonable, but still need further models to check.
+
+## Compare your model to two others:
+
+-   One using length at birth and gestational age as predictors (main effects only)
+
+-   One using head circumference, length, sex, and all interactions (including the three-way interaction)
+
+```{r message=FALSE, warning=FALSE}
+cv_df = crossv_mc(birthweight_df, 100) 
+cv_df = cv_df |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)) 
+cv_df = cv_df |>
+  mutate(
+    original_mod  = map(train, \(df) lm(bwt ~ babysex + bhead + blength + fincome + gaweeks + malform, data = df)),
+    length_gestational_mod  = map(train, \(df) lm(bwt ~ blength + gaweeks, data = birthweight_df)),
+    interaction_mod  = map(train, \(df) lm(bwt ~ bhead * blength * babysex, data = df))
+    ) |> 
+  mutate(
+    rmse_original = map2_dbl(original_mod, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_length_gestational = map2_dbl(length_gestational_mod, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_interaction = map2_dbl(interaction_mod, test, \(mod, df) rmse(model = mod, data = df))
+    )
+#Plotting
+cv_df = cv_df |>
+  select(starts_with("rmse")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |>
+  mutate(model = fct_inorder(model))  
+ggplot(cv_df, aes(x = model, y = rmse)) + geom_violin()
+```
+
+Based on the plot, the original model shows the lowest RMSE which has the best predictability. As followed, the interaction model has a slightly higher RMSE and less predictable. However, the model of length and gestational age has higher RMSE and least predictability. 
